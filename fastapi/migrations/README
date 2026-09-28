@@ -1,0 +1,4 @@
+本目录保存 Alembic 数据库结构迁移。
+
+生产环境和本地环境都通过 `alembic upgrade head` 更新表结构，
+不要使用 `Base.metadata.create_all()` 绕过迁移历史。
