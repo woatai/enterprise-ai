@@ -4,7 +4,7 @@
 
 ## 当前完成情况
 
-截至 2026-09-28，项目处于“后端基础设施和通用工作流入口完成，电商 V1 业务功能待开发”阶段。当前的 `POST /workflow/run` 只创建一条状态为 `accepted` 的工作流运行记录，表示请求已经接收并保存，不表示工作流已经执行完成。
+截至 2026-09-30，项目处于“后端基础设施和通用工作流入口完成，电商 V1 业务功能待开发”阶段。当前的 `POST /workflow/run` 只创建一条状态为 `accepted` 的工作流运行记录，表示请求已经接收并保存，不表示工作流已经执行完成。
 
 当前主流程：
 
@@ -24,8 +24,9 @@ POST /workflow/run
 | 工作流运行记录落库 | 已验证 | 首次请求创建 `accepted` 记录；同键同请求返回原记录；同键不同请求返回冲突 |
 | 幂等与异常处理 | 已验证 | 已覆盖正常创建、重复请求、并发唯一约束冲突、缺少幂等键和数据库异常 |
 | MySQL 与 Alembic | 已验证 | MySQL 8.4 容器健康；数据库位于 `20260920_0001 (head)`；`alembic check` 无待生成迁移 |
+| FastAPI 与 MySQL Compose | 已验证 | API 镜像、健康检查、数据库依赖和 `enterprise-shared` 外部网络已配置；本机 Compose 启动、迁移、HTTP 写入和数据库记录已验证 |
 | `workflow_run`、`workflow_step_run` 表 | 已实现 | 表、ORM 模型、约束和索引已经建立；当前接口只写入 `workflow_run` |
-| 自动化测试 | 已验证 | 2026-09-28 执行测试共 8 个通过；当前测试使用 `FakeSession`，真实 MySQL 自动化集成测试仍待补充 |
+| 自动化测试 | 已验证 | 2026-09-30 执行测试共 8 个通过；当前测试使用 `FakeSession`，真实 MySQL 自动化集成测试仍待补充 |
 | Excel 导入、清洗、指标和异常规则 | 计划中 | 已定义 V1 需求，尚无业务实现代码 |
 | AI 日报、人工审核和异常任务 | 计划中 | 已定义输入输出和状态要求，尚未实现 |
 | n8n 通知与回调 | 计划中 | 数据模型预留了相关字段，尚未连接 n8n |
@@ -38,7 +39,7 @@ POST /workflow/run
 ```text
 .
 ├── .env.example             # 环境变量模板
-├── compose.yml              # 本地 MySQL 服务
+├── compose.yml              # FastAPI、MySQL 和共享网络配置
 ├── README.md
 └── fastapi/
     ├── Dockerfile           # API 镜像构建
@@ -65,15 +66,35 @@ uvicorn --app-dir fastapi app.main:app --reload
 
 接口文档：<http://127.0.0.1:8000/docs>
 
-## Docker 运行
+## Docker Compose 运行
+
+复制环境变量模板并替换示例密码：
 
 ```bash
-docker build -t enterprise-fastapi:0.1 ./fastapi
-docker run --rm --name enterprise-fastapi -p 8000:8000 \
-  --env-file .env \
-  -e MYSQL_HOST=host.docker.internal \
-  enterprise-fastapi:0.1
+cp .env.example .env
 ```
+
+首次运行前创建供 FastAPI 与外部 n8n Compose 共用的网络：
+
+```bash
+docker network create enterprise-shared
+```
+
+如果网络已经存在，Docker 会提示已存在，不需要重复创建。
+
+启动 MySQL、构建 FastAPI 镜像并执行迁移：
+
+```bash
+docker compose up -d --wait mysql
+docker compose build api
+docker compose run --rm api alembic -c alembic.ini upgrade head
+docker compose up -d api
+docker compose ps
+```
+
+Compose 内部强制让 API 使用 `mysql:3306` 连接数据库；根目录 `.env` 中的
+`MYSQL_HOST=127.0.0.1` 仍可供宿主机直接运行 Uvicorn 时使用。API 的 8000 端口
+只映射到宿主机 `127.0.0.1`，不需要在云安全组中向公网开放。
 
 健康检查：
 
@@ -94,6 +115,48 @@ curl -X POST http://127.0.0.1:8000/workflow/run \
 返回原记录、HTTP 200，并附带 `Idempotent-Replay: true` 响应头；同一幂等键不能
 用于不同请求。
 
+### 连接已有 n8n
+
+n8n 位于另一份 Compose 配置时，把它的服务同时接入外部网络：
+
+```yaml
+services:
+  n8n:
+    networks:
+      - default
+      - enterprise_shared
+
+networks:
+  enterprise_shared:
+    name: enterprise-shared
+    external: true
+```
+
+n8n 的 HTTP Request 节点使用 Docker 内部地址：
+
+```text
+http://enterprise-fastapi:8000/workflow/run
+```
+
+首次手工联调也可以执行 `docker network connect enterprise-shared n8n-n8n-1`，
+但容器重新创建后手工连接可能丢失，长期应写入 n8n 的 Compose 配置。
+
+### 后续发布新版本
+
+本地测试并推送代码后，在服务器执行：
+
+```bash
+git pull --ff-only
+docker compose build api
+docker compose run --rm api alembic -c alembic.ini upgrade head
+docker compose up -d --no-deps api
+docker compose ps
+curl http://127.0.0.1:8000/health
+```
+
+正常更新只重建 API，不删除 MySQL 数据卷。不要把
+`docker compose down -v` 作为日常发布命令。
+
 ## MySQL 业务数据库
 
 复制环境变量模板并修改本地密码：
@@ -102,10 +165,10 @@ curl -X POST http://127.0.0.1:8000/workflow/run \
 cp .env.example .env
 ```
 
-启动 MySQL 8.4：
+只启动 MySQL 8.4（用于宿主机直接运行 Uvicorn）：
 
 ```bash
-docker compose up -d
+docker compose up -d mysql
 docker compose ps
 ```
 
