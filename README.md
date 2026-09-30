@@ -40,6 +40,7 @@ POST /workflow/run
 .
 ├── .env.example             # 环境变量模板
 ├── compose.yml              # FastAPI、MySQL 和共享网络配置
+├── compose.local.yml        # Mac 本机 MySQL 端口映射
 ├── README.md
 └── fastapi/
     ├── Dockerfile           # API 镜像构建
@@ -165,12 +166,16 @@ curl http://127.0.0.1:8000/health
 cp .env.example .env
 ```
 
-只启动 MySQL 8.4（用于宿主机直接运行 Uvicorn）：
+Mac 只启动 MySQL 8.4（用于宿主机直接运行 Uvicorn 或数据库客户端）：
 
 ```bash
-docker compose up -d mysql
-docker compose ps
+docker compose -f compose.yml -f compose.local.yml up -d mysql
+docker compose -f compose.yml -f compose.local.yml ps
 ```
+
+公共 `compose.yml` 不发布 MySQL 端口；Mac 通过 `compose.local.yml` 追加
+`127.0.0.1:${MYSQL_PORT:-3306}:3306`。服务器只使用 `compose.yml`，不要加载
+`compose.local.yml`。
 
 安装 Python 依赖：
 
